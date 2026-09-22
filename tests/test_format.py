@@ -145,6 +145,33 @@ class TestFormat:
         s = 'select -- foo\nfrom    bar\n'
         assert f(s) == 'select -- foo\nfrom bar'
 
+    def test_strip_ws_parenthesis(self):
+        f = lambda sql: sqlparse.format(sql, strip_whitespace=True)
+        assert f('SELECT ( a ) FROM t') == 'SELECT (a) FROM t'
+        assert f('SELECT (  ) FROM t') == 'SELECT () FROM t'
+        assert f('SELECT (a, b) FROM t') == 'SELECT (a, b) FROM t'
+
+    @pytest.mark.parametrize('sql', [
+        '( AS )',
+        '(( AS ))',
+        'f( AS )',
+        'SELECT ( AS ) FROM t',
+        'SELECT * FROM t WHERE x IN ( AS )',
+        'SELECT (SELECT ( AS ) FROM u) FROM t',
+        'SELECT (a, ( AS )) FROM t',
+    ])
+    @pytest.mark.parametrize('options', [
+        {},
+        {'strip_whitespace': True},
+        {'reindent_aligned': True},
+        {'keyword_case': 'upper'},
+        {'strip_whitespace': True, 'reindent_aligned': True,
+         'keyword_case': 'upper'},
+    ])
+    def test_strip_ws_degenerate_parenthesis(self, sql, options):
+        # degenerate parenthesis groups must not raise IndexError
+        assert isinstance(sqlparse.format(sql, **options), str)
+
     def test_strip_ws_invalid_option(self):
         s = 'select -- foo\nfrom    bar\n'
         with pytest.raises(SQLParseError):
@@ -344,6 +371,72 @@ class TestFormatReindentAligned:
             '       ROW_NUMBER() OVER '
             '(PARTITION BY b, c ORDER BY d DESC) as row_num',
             '  from table'])
+
+    def test_join_on_alignment(self):
+        sql = 'SELECT a FROM t1 JOIN t2 ON t1.a = t2.a WHERE t1.b > 1'
+        result = self.formatter(sql)
+        assert '  JOIN t2' in result.splitlines()
+        assert '    ON t1.a = t2.a' in result.splitlines()
+
+    def test_case_statement_exact(self):
+        sql = 'SELECT CASE WHEN a THEN b ELSE c END FROM t'
+        assert self.formatter(sql) == (
+            'SELECT CASE WHEN a THEN b\n'
+            '            ELSE c\n'
+            '             END\n'
+            '  FROM t')
+
+    @pytest.mark.parametrize('sql', [
+        "CASE 'a' := WHERE END SELECT GO # ->>",
+        'SELECT CASE WHEN a THEN b FROM t',
+        'SELECT CASE END FROM t',
+        'CASE',
+        'CASE WHEN',
+        'SELECT CASE WHEN a THEN (SELECT CASE WHEN b THEN c END) END FROM t',
+        'SELECT (SELECT CASE WHEN x THEN y END FROM u) FROM t',
+    ])
+    def test_malformed_case_statements(self, sql):
+        # malformed CASE constructs must not raise ValueError
+        assert isinstance(self.formatter(sql), str)
+
+    def test_offset_fetch(self):
+        sql = ('SELECT id FROM tbl WHERE id > 0 ORDER BY id ASC '
+               'OFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY')
+        result = self.formatter(sql)
+        # the whole OFFSET ... FETCH ... ONLY clause stays on one line
+        assert 'OFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY' \
+               in result.splitlines()
+        assert not any(line.strip().startswith('ONLY')
+                       for line in result.splitlines())
+
+    @pytest.mark.parametrize('clause', [
+        'OFFSET 5 ROWS',
+        'OFFSET 5 ROWS FETCH FIRST 10 ROWS ONLY',
+        'OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY',
+        'FETCH FIRST 5 ROWS ONLY',
+        'FETCH FIRST 5 ROW ONLY',
+        'FETCH NEXT 5 ROWS ONLY',
+    ])
+    def test_offset_fetch_clauses(self, clause):
+        sql = f'SELECT a FROM t ORDER BY a {clause}'
+        result = self.formatter(sql)
+        assert clause in [line.strip() for line in result.splitlines()]
+        assert not any(line.strip().startswith('ONLY')
+                       for line in result.splitlines())
+
+    @pytest.mark.parametrize('sql,clause', [
+        ('ALTER TABLE t ADD CONSTRAINT c1 PRIMARY KEY (a, b)',
+         'ALTER TABLE t ADD CONSTRAINT c1 PRIMARY KEY (a, b)'),
+        ('ALTER TABLE t ADD FOREIGN KEY (a) REFERENCES u(b)',
+         'ALTER TABLE t ADD FOREIGN KEY (a) REFERENCES u(b)'),
+        ('SELECT a FROM t WHERE jdoc IS JSON',
+         'WHERE jdoc IS JSON'),
+    ])
+    def test_keyword_substrings_not_split(self, sql, clause):
+        # keywords that merely contain a split word (ON, OR, ...) as a
+        # substring must not start a new line
+        result = self.formatter(sql)
+        assert clause in [line.strip() for line in result.splitlines()]
 
 
 class TestSpacesAroundOperators:

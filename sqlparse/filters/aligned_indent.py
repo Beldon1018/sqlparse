@@ -15,12 +15,13 @@ class AlignedIndentFilter:
                   r'(INNER\s+|OUTER\s+|STRAIGHT\s+)?|'
                   r'(CROSS\s+|NATURAL\s+)?)?JOIN\b')
     by_words = r'(GROUP|ORDER)\s+BY\b'
-    split_words = ('FROM',
-                   join_words, 'ON', by_words,
-                   'WHERE', 'AND', 'OR',
-                   'HAVING', 'LIMIT',
-                   'UNION', 'VALUES',
-                   'SET', 'BETWEEN', 'EXCEPT')
+    split_words = (r'\bFROM\b',
+                   join_words, r'\bON\b', by_words,
+                   r'\bWHERE\b', r'\bAND\b', r'\bOR\b',
+                   r'\bHAVING\b', r'\bLIMIT\b',
+                   r'\bUNION\b', r'\bVALUES\b',
+                   r'\bSET\b', r'\bBETWEEN\b', r'\bEXCEPT\b',
+                   r'\bOFFSET\b', r'\bFETCH\b')
 
     def __init__(self, char=' ', n='\n'):
         self.n = n
@@ -70,15 +71,18 @@ class AlignedIndentFilter:
         cases = tlist.get_cases(skip_ws=True)
         # align the end as well
         end_token = tlist.token_next_by(m=(T.Keyword, 'END'))[1]
-        cases.append((None, [end_token]))
+        if end_token is not None:
+            cases.append((None, [end_token]))
 
         condition_width = [len(' '.join(map(str, cond))) if cond else 0
                            for cond, _ in cases]
-        max_cond_width = max(condition_width)
+        max_cond_width = max(condition_width, default=0)
 
         for i, (cond, value) in enumerate(cases):
             # cond is None when 'else or end'
-            stmt = cond[0] if cond else value[0]
+            stmt = cond[0] if cond else value[0] if value else None
+            if stmt is None:
+                continue
 
             if i > 0:
                 tlist.insert_before(stmt, self.nl(offset_ - len(str(stmt))))
@@ -95,7 +99,22 @@ class AlignedIndentFilter:
             tidx, token = self._next_token(tlist, tidx)
             if token and token.normalized == 'AND':
                 tidx, token = self._next_token(tlist, tidx)
+        # treat "OFFSET x ROWS FETCH y ROWS ONLY" as a single statement
+        if token and token.normalized == 'FETCH' \
+                and self._fetch_follows_offset(tlist, tidx):
+            tidx, token = self._next_token(tlist, tidx)
         return tidx, token
+
+    def _fetch_follows_offset(self, tlist, tidx):
+        # check if the FETCH at tidx belongs to an OFFSET ... FETCH clause
+        for prev in reversed(tlist.tokens[:tidx]):
+            if prev.is_whitespace:
+                continue
+            if prev.match(T.Keyword, 'OFFSET'):
+                return True
+            if prev.match(T.Keyword, self.split_words, regex=True):
+                return False
+        return False
 
     def _split_kwds(self, tlist):
         tidx, token = self._next_token(tlist)
