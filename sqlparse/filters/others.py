@@ -112,11 +112,16 @@ class StripWhitespaceFilter:
         return self._stripws_default(tlist)
 
     def _stripws_parenthesis(self, tlist):
+        # If the contents of the parentheses were grouped into fewer
+        # than three tokens (e.g. a single Identifier spanning the whole
+        # parenthesis), there's no whitespace next to the brackets.
+        if len(tlist.tokens) < 3:
+            return self._stripws_default(tlist)
         while tlist.tokens[1].is_whitespace:
             tlist.tokens.pop(1)
         while tlist.tokens[-2].is_whitespace:
             tlist.tokens.pop(-2)
-        if tlist.tokens[-2].is_group:
+        if tlist.tokens[-2].is_group and tlist.tokens[-2].tokens:
             # save to remove the last whitespace
             while tlist.tokens[-2].tokens[-1].is_whitespace:
                 tlist.tokens[-2].tokens.pop(-1)

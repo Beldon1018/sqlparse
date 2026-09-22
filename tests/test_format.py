@@ -145,6 +145,39 @@ class TestFormat:
         s = 'select -- foo\nfrom    bar\n'
         assert f(s) == 'select -- foo\nfrom bar'
 
+    @pytest.mark.parametrize('sql', [
+        '( AS )',
+        '(( AS ))',
+        'f( AS )',
+        'SELECT ( AS ) FROM t',
+        'SELECT * FROM t WHERE x IN ( AS )',
+        'SELECT (SELECT ( AS ) FROM u) FROM t',
+        'SELECT (a, ( AS )) FROM t',
+    ])
+    @pytest.mark.parametrize('options', [
+        {},
+        {'strip_whitespace': True},
+        {'reindent': True},
+        {'reindent_aligned': True},
+        {'keyword_case': 'upper'},
+        {'keyword_case': 'lower'},
+        {'strip_whitespace': True, 'keyword_case': 'capitalize'},
+        {'strip_whitespace': True, 'reindent_aligned': True,
+         'keyword_case': 'upper'},
+    ])
+    def test_degenerate_parenthesis_no_crash(self, sql, options):
+        # Degenerate parenthesis groups must not raise IndexError,
+        # regardless of the combination of formatting options.
+        res = sqlparse.format(sql, **options)
+        assert isinstance(res, str)
+
+    def test_strip_ws_parenthesis_unchanged(self):
+        # Normal parenthesis groups keep their existing results.
+        f = lambda sql: sqlparse.format(sql, strip_whitespace=True)
+        assert f('SELECT ( a ) FROM t') == 'SELECT (a) FROM t'
+        assert f('SELECT (  ) FROM t') == 'SELECT () FROM t'
+        assert f('SELECT (a, b) FROM t') == 'SELECT (a, b) FROM t'
+
     def test_strip_ws_invalid_option(self):
         s = 'select -- foo\nfrom    bar\n'
         with pytest.raises(SQLParseError):
@@ -344,6 +377,82 @@ class TestFormatReindentAligned:
             '       ROW_NUMBER() OVER '
             '(PARTITION BY b, c ORDER BY d DESC) as row_num',
             '  from table'])
+
+    @pytest.mark.parametrize('sql', [
+        "CASE 'a' := WHERE END SELECT GO # ->>",
+        'SELECT CASE WHEN a THEN b FROM t',
+        'SELECT CASE END FROM t',
+        'CASE',
+        'CASE WHEN',
+        'SELECT CASE WHEN a THEN b ELSE END FROM t',
+        'SELECT CASE WHEN a THEN CASE WHEN b THEN c END END FROM t',
+        'SELECT * FROM t WHERE x IN (SELECT CASE WHEN a THEN b END FROM u)',
+    ])
+    @pytest.mark.parametrize('options', [
+        {'reindent_aligned': True},
+        {'reindent_aligned': True, 'keyword_case': 'upper'},
+        {'reindent_aligned': True, 'strip_whitespace': True},
+    ])
+    def test_malformed_case_no_crash(self, sql, options):
+        # Malformed CASE constructs must not raise ValueError.
+        res = sqlparse.format(sql, **options)
+        assert isinstance(res, str)
+
+    def test_case_statement_else_end_unchanged(self):
+        sql = 'SELECT CASE WHEN a THEN b ELSE c END FROM t'
+        assert self.formatter(sql) == (
+            'SELECT CASE WHEN a THEN b\n'
+            '            ELSE c\n'
+            '             END\n'
+            '  FROM t')
+
+    @pytest.mark.parametrize('clause', [
+        'OFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY',
+        'OFFSET 0 ROWS FETCH FIRST 100 ROWS ONLY',
+        'OFFSET 0 ROWS FETCH FIRST 100 ROW ONLY',
+        'OFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY',
+    ])
+    def test_offset_fetch_clause(self, clause):
+        sql = ('SELECT id FROM tbl WHERE id > 0 '
+               f'ORDER BY id ASC {clause}')
+        res = self.formatter(sql)
+        # the whole paging clause stays on a single unindented line
+        assert f'\n{clause}\n' in f'\n{res}\n'
+        # ONLY must never be orphaned on its own line
+        for line in res.splitlines():
+            assert not line.strip().startswith('ONLY')
+
+    def test_offset_without_fetch(self):
+        res = self.formatter('SELECT a FROM t ORDER BY a OFFSET 5 ROWS')
+        assert '\nOFFSET 5 ROWS' in f'\n{res}'
+
+    @pytest.mark.parametrize('sql,fragment', [
+        ('ALTER TABLE t ADD CONSTRAINT c1 PRIMARY KEY (a, b)',
+         'ADD CONSTRAINT'),
+        ('ALTER TABLE t ADD FOREIGN KEY (a) REFERENCES u(b)',
+         'ADD FOREIGN KEY'),
+        ('SELECT a FROM t WHERE jdoc IS JSON', 'IS JSON'),
+    ])
+    def test_keyword_substrings_not_split(self, sql, fragment):
+        # Keywords that merely contain a shorter clause keyword as a
+        # substring (CONSTRAINT/ONLY/JSON contain "ON", FOREIGN contains
+        # "OR") must not start a new clause line.
+        res = self.formatter(sql)
+        assert any(fragment in line for line in res.splitlines())
+
+    def test_join_on_alignment_unchanged(self):
+        res = self.formatter(
+            'SELECT a FROM t1 JOIN t2 ON t1.a = t2.a WHERE t1.b > 1')
+        assert '\n  JOIN t2' in res
+        assert '\n    ON t1.a = t2.a' in res
+
+    def test_limit_unchanged(self):
+        res = self.formatter('SELECT id FROM tbl ORDER BY id LIMIT 10')
+        assert '\n LIMIT 10' in res
+
+    def test_between_and_unchanged(self):
+        res = self.formatter('SELECT a FROM t WHERE a BETWEEN 1 AND 5')
+        assert '\n WHERE a BETWEEN 1 AND 5' in res
 
 
 class TestSpacesAroundOperators:

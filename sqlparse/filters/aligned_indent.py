@@ -20,7 +20,8 @@ class AlignedIndentFilter:
                    'WHERE', 'AND', 'OR',
                    'HAVING', 'LIMIT',
                    'UNION', 'VALUES',
-                   'SET', 'BETWEEN', 'EXCEPT')
+                   'SET', 'BETWEEN', 'EXCEPT',
+                   'OFFSET')
 
     def __init__(self, char=' ', n='\n'):
         self.n = n
@@ -70,7 +71,10 @@ class AlignedIndentFilter:
         cases = tlist.get_cases(skip_ws=True)
         # align the end as well
         end_token = tlist.token_next_by(m=(T.Keyword, 'END'))[1]
-        cases.append((None, [end_token]))
+        if end_token is not None:
+            cases.append((None, [end_token]))
+        if not cases:
+            return
 
         condition_width = [len(' '.join(map(str, cond))) if cond else 0
                            for cond, _ in cases]
@@ -78,7 +82,9 @@ class AlignedIndentFilter:
 
         for i, (cond, value) in enumerate(cases):
             # cond is None when 'else or end'
-            stmt = cond[0] if cond else value[0]
+            stmt = cond[0] if cond else (value[0] if value else None)
+            if stmt is None:
+                continue
 
             if i > 0:
                 tlist.insert_before(stmt, self.nl(offset_ - len(str(stmt))))
@@ -88,7 +94,10 @@ class AlignedIndentFilter:
                 tlist.insert_after(cond[-1], ws)
 
     def _next_token(self, tlist, idx=-1):
-        split_words = T.Keyword, self.split_words, True
+        # match whole keywords only, so that e.g. "ON" doesn't match
+        # inside "ONLY" or "CONSTRAINT"
+        words = tuple(rf'\b(?:{word})\b' for word in self.split_words)
+        split_words = T.Keyword, words, True
         tidx, token = tlist.token_next_by(m=split_words, idx=idx)
         # treat "BETWEEN x and y" as a single statement
         if token and token.normalized == 'BETWEEN':
